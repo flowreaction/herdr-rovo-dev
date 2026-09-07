@@ -33,6 +33,21 @@ once they are active for a pane:
    plugin's *current* location itself, at fire-time, through Herdr's public
    `plugin list` API, so the command recorded in Rovo's config never goes
    stale.
+
+   Rovo's `on_complete` event fires as soon as its backend finishes
+   generating a response, which can be a few seconds before the TUI finishes
+   *rendering* that response on screen. So this hook does not report
+   idle/done itself when `on_complete` fires; it hands off to a short-lived
+   background task that polls the pane's own visible output and reports
+   idle/done only once it actually reads as idle - not merely "no longer
+   working" - and gives up without reporting anything if the pane instead
+   turns out to be `blocked` (e.g. a permission prompt) or never settles to
+   idle within its poll budget, leaving whatever state was last reported
+   alone. This keeps anything reading Herdr's state for this pane (e.g. an
+   automated backend polling for "done") from seeing idle before the response
+   has actually finished rendering. A later prompt arriving before that task
+   finishes supersedes it, so a slow settle from an old response can never
+   overwrite a newer prompt's already-correct `working` state.
 2. **Pane scanning** as a fallback that only applies to panes with **no active
    hook pipeline yet** - e.g. already-running panes from before hooks were
    installed, or sessions where hooks are not (yet) firing for some other

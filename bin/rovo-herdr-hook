@@ -30,6 +30,39 @@ tool_name="$(printf '%s' "$payload" \
 pane_id="$(resolve_rovo_hook_pane "$cwd" 2>/dev/null || true)"
 [ -n "$pane_id" ] || exit 0
 
+# Track hook-pipeline liveness for this pane BEFORE any state for it becomes
+# externally visible below, so scan-rovo-panes' scraping fallback can never
+# race in during the hand-off and re-derive (and potentially clobber) state
+# from screen text while wrongly believing no hook is active yet. A clean
+# session end releases ownership only *after* its own final report (below),
+# once this pane no longer has anything left to be authoritative about, so a
+# later unrelated session reusing the same pane id has to re-earn hook trust
+# from its own first event.
+if [ "$event_name" != "on_session_end" ]; then
+  mark_pane_hooked "$pane_id"
+fi
+
+# on_complete fires when Rovo's backend finishes generating a response, which
+# can be seconds before the TUI finishes rendering it (see the settling note
+# in herdr-lib.sh). Reporting idle/done here, synchronously, would tell Herdr
+# the pane is quiet before the screen agrees. So this event reports nothing
+# itself; it hands off to a detached settle task that polls the pane's actual
+# rendered state and only then reports idle/done, guarded against a newer
+# prompt superseding this completion in the meantime.
+if [ "$event_name" = "on_complete" ]; then
+  gen="$(current_generation "$pane_id")"
+  (
+    settle_and_report_complete "$pane_id" "$session_id" "$gen"
+  ) </dev/null >/dev/null 2>&1 &
+  exit 0
+fi
+
+if [ "$event_name" = "on_user_prompt" ]; then
+  bump_generation "$pane_id" >/dev/null
+elif [ "$event_name" = "on_session_start" ]; then
+  clear_generation "$pane_id"
+fi
+
 state="unknown"
 custom_status=""
 message=""
@@ -60,11 +93,6 @@ case "$event_name" in
     custom_status="$(short_status "tool-done:${tool_name:-tool}")"
     message="Rovo Dev finished ${tool_name:-a tool}"
     ;;
-  on_complete)
-    state="idle"
-    custom_status="done"
-    message="Rovo Dev completed"
-    ;;
   on_error)
     state="blocked"
     custom_status="error"
@@ -84,15 +112,9 @@ esac
 
 report_agent "$pane_id" "$state" "$custom_status" "$session_id" "$message" || true
 
-# Track hook-pipeline liveness for this pane so scan-rovo-panes' scraping
-# fallback defers to these (far more reliable) hook reports instead of
-# re-deriving and potentially clobbering them from screen text. A session end
-# clears the marker so a later, unrelated session reusing the same pane id
-# starts over and has to re-earn hook trust from its own first event.
 if [ "$event_name" = "on_session_end" ]; then
   clear_pane_hooked "$pane_id"
-else
-  mark_pane_hooked "$pane_id"
+  clear_generation "$pane_id"
 fi
 
 exit 0

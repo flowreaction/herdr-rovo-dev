@@ -152,6 +152,108 @@ clear_miss_count() {
   rm -f "$(miss_count_file "$pane_id")" 2>/dev/null || true
 }
 
+# --- Completion settling & generation guard --------------------------------
+#
+# Rovo's on_complete hook fires the instant its backend finishes generating a
+# response, which can be seconds before the TUI finishes RENDERING that
+# response on screen (observed live: "Rovo Dev is thinking" stays visible for
+# several seconds after on_complete). Reporting idle/done synchronously inside
+# the hook therefore tells Herdr - and anything waiting on Herdr, e.g. an
+# automated backend - that the pane is quiet before the screen agrees, so a
+# reader can grab a still-partial response. Settling instead polls the pane's
+# own rendered output (via classify_state, the same heuristic the scan
+# fallback uses) and reports idle/done only once it actually reads "idle" -
+# not merely "not working" - so the report follows what's actually on screen
+# rather than a blind delay or an over-eager guess. "working" and "unknown"
+# (a transient read miss, or output that doesn't yet match any pattern) keep
+# polling since either can still resolve to idle shortly. "blocked" means
+# Rovo has moved on to waiting on something else entirely (e.g. a permission
+# prompt) rather than finishing up, so settling stops without reporting -
+# there is nothing to "complete" and the blocked state some other hook
+# already reported must not be overwritten. Exhausting the poll budget
+# without ever observing idle is treated the same way: it leaves whatever
+# state was last hook-reported alone rather than guessing done, since a
+# render that's still not finished after the whole poll budget is exactly
+# the premature-completion failure mode this exists to prevent.
+#
+# A generation counter guards against a slow/late settle for an OLDER prompt
+# clobbering a NEWER prompt's already-correct "working" state: on_user_prompt
+# bumps the generation, and a settle task checks it immediately before its
+# final report and abandons (reports nothing) if the generation has moved on.
+readonly ROVO_SETTLE_POLL_INTERVAL="${ROVO_SETTLE_POLL_INTERVAL:-0.4}"
+readonly ROVO_SETTLE_MAX_ITERATIONS="${ROVO_SETTLE_MAX_ITERATIONS:-30}"
+
+generation_dir() {
+  local dir
+  dir="$(state_dir)/generation"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s' "$dir"
+}
+
+generation_file() {
+  local pane_id="$1"
+  printf '%s/%s' "$(generation_dir)" "$(printf '%s' "$pane_id" | tr '/' '_')"
+}
+
+# Print a pane's current generation (0 when none/unset/corrupt).
+current_generation() {
+  local gen
+  gen="$(cat "$(generation_file "$1")" 2>/dev/null || true)"
+  case "$gen" in
+    '' | *[!0-9]*) printf '0' ;;
+    *) printf '%s' "$gen" ;;
+  esac
+}
+
+# Start a new generation for a pane (a fresh prompt supersedes any settle task
+# still in flight for a prior one) and print it.
+bump_generation() {
+  local pane_id="$1" next
+  next="$(( $(current_generation "$pane_id") + 1 ))"
+  printf '%s' "$next" > "$(generation_file "$pane_id")" 2>/dev/null || true
+  printf '%s' "$next"
+}
+
+# Forget a pane's generation (session boundary: start or end).
+clear_generation() {
+  rm -f "$(generation_file "$1")" 2>/dev/null || true
+}
+
+# Poll a pane's actual rendered state until it reads "idle" (or
+# ROVO_SETTLE_MAX_ITERATIONS polls pass), then report idle/done - but only if
+# nothing has superseded this completion meanwhile: a newer prompt (generation
+# moved on) or the pane's hook ownership having been released (a clean session
+# end already reported its own final state). "working"/"unknown" keep polling;
+# "blocked" or exhausting the poll budget without ever seeing idle both leave
+# the last hook-reported state untouched and report nothing. Intended to be
+# run detached by the caller so the lifecycle hook itself returns immediately
+# and never blocks Rovo; this function assumes it is running in that detached
+# context.
+settle_and_report_complete() {
+  local pane_id="$1" session_id="$2" expected_gen="$3"
+  local i=0 state=""
+  while [ "$i" -lt "$ROVO_SETTLE_MAX_ITERATIONS" ]; do
+    [ "$(current_generation "$pane_id")" = "$expected_gen" ] || return 0
+    pane_hook_active "$pane_id" || return 0
+
+    state="$(classify_state "$pane_id")"
+    case "$state" in
+      idle) break ;;
+      working | unknown) ;; # still rendering, or a transient read miss - keep polling.
+      *) return 0 ;; # blocked (or anything else non-idle): not finishing up, nothing to complete.
+    esac
+
+    sleep "$ROVO_SETTLE_POLL_INTERVAL" 2>/dev/null || true
+    i=$((i + 1))
+  done
+
+  [ "$state" = "idle" ] || return 0
+  [ "$(current_generation "$pane_id")" = "$expected_gen" ] || return 0
+  pane_hook_active "$pane_id" || return 0
+
+  report_agent "$pane_id" "idle" "done" "$session_id" "Rovo Dev completed" || true
+}
+
 # jq must be available for JSON parsing.
 require_jq() {
   if ! command -v jq >/dev/null 2>&1; then
