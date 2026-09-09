@@ -462,12 +462,15 @@ report_agent() {
   local pane_id="$1" state="$2" custom_status="$3"
   local agent_session_id="${4:-}"
   local message="${5:-}"
+  local seq
+  seq="$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null || true)"
   local args=(pane report-agent "$pane_id"
     --source "$ROVO_SOURCE"
     --agent "$ROVO_AGENT"
     --state "$state")
   [ -n "$agent_session_id" ] && args+=(--agent-session-id "$agent_session_id")
   [ -n "$message" ] && args+=(--message "$message")
+  [ -n "$seq" ] && args+=(--seq "$seq")
 
   # Report the core agent state. Capture stderr (not silently discard it) so a
   # rejected call is visible in the plugin log rather than failing invisibly.
@@ -482,7 +485,7 @@ report_agent() {
     return "$rc"
   fi
 
-  report_custom_status "$pane_id" "$state" "$custom_status"
+  report_custom_status "$pane_id" "$state" "$custom_status" "$seq"
   return 0
 }
 
