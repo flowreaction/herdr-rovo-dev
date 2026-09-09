@@ -40,7 +40,7 @@ You can also run the scanner directly inside a Herdr pane:
 Before opening a PR, run a syntax check:
 
 ```sh
-bash -n bin/scan-rovo-panes bin/herdr-lib.sh bin/check-deps
+bash -n bin/scan-rovo-panes bin/herdr-lib.sh bin/check-deps bin/rovo-herdr-hook
 ```
 
 And run the tests. They drive the library functions against a fake `herdr`

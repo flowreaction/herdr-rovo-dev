@@ -33,6 +33,13 @@ once they are active for a pane:
    plugin's *current* location itself, at fire-time, through Herdr's public
    `plugin list` API, so the command recorded in Rovo's config never goes
    stale.
+
+   Completion is reported synchronously from `on_complete`. An earlier
+   implementation delegated this to a detached settling process, but Rovo's
+   hook runner terminated that child before it could report, leaving sessions
+   permanently marked `working`. Synchronous reporting makes completion
+   delivery reliable; nanosecond event sequences prevent an older lifecycle
+   report from overwriting a newer one.
 2. **Pane scanning** as a fallback that only applies to panes with **no active
    hook pipeline yet** - e.g. already-running panes from before hooks were
    installed, or sessions where hooks are not (yet) firing for some other
@@ -69,7 +76,32 @@ Note: the footer `? for shortcuts.` is shown by the Rovo CLI at all times, wheth
 or not a run is in flight, so the `working`/`blocked` checks are evaluated first
 and take priority over the `idle` check.
 
+Only a small slice near the *bottom* of the fetched output is pattern-matched,
+not all of it - a pane's scrollback can still contain a stale "Rovo is
+thinking" or tool-call line from an earlier, already-finished turn, and
+matching against that would outvote a current, genuinely idle prompt. This only
+applies to the scan fallback; lifecycle hooks provide authoritative state for
+hooked panes.
+
 The current Rovo `agent mode:` (e.g. `plan`) is reported as the agent's custom status.
+
+### Semantic session titles
+
+The plugin reads Rovo's generated or manually assigned title from the session's
+`metadata.json` and publishes it as both Herdr's visible agent name and the
+`session_title` sidebar token. It checks both current (`~/.rovo/sessions`) and
+legacy (`~/.rovodev/sessions`) storage locations.
+
+Title metadata uses the dedicated source `plugin:rovo-dev:title`, separate from
+the lifecycle source `plugin:rovo-dev`. This prevents later state reports from
+clearing the title. Titles are refreshed on every Rovo lifecycle hook, so a
+generated or manually changed title is picked up by the next prompt, tool,
+completion, error, or session event. When no title exists yet, the visible name
+falls back to `Rovo Dev`.
+
+The plugin deliberately does **not** rename Herdr tabs. Tab labels belong to the
+user and remain available as a separate field in the agents view; the semantic
+session title only controls the displayed agent name/token.
 
 ## Install
 
@@ -79,8 +111,8 @@ referenced either by local path or by `owner/repo`.
 ### From GitHub (shareable)
 
 ```sh
-herdr plugin install usrivastava92/herdr-rovo-dev              # latest default branch
-herdr plugin install usrivastava92/herdr-rovo-dev --ref v1.0.0 # pin a tag/branch/commit
+herdr plugin install flowreaction/herdr-rovo-dev              # latest default branch
+herdr plugin install flowreaction/herdr-rovo-dev --ref v1.0.0 # pin a tag/branch/commit
 herdr plugin uninstall rovo-dev.detector
 ```
 
@@ -210,8 +242,10 @@ You can also run the scanner directly from a Herdr pane:
   never used to override an already-hooked pane's state. If Rovo's interface
   text changes, the patterns in `bin/herdr-lib.sh` (`classify_state`) may need
   updating for that fallback path.
-- No durable Rovo session id/path is reported yet; if Rovo exposes one, it can be
-  passed via `--agent-session-id` / `--agent-session-path`.
+- Rovo exposes no dedicated title-change hook. A title changed while the session
+  is completely idle appears in Herdr on the next lifecycle event rather than
+  immediately. The plugin avoids a permanent filesystem watcher for this edge
+  case.
 
 ## Files
 
