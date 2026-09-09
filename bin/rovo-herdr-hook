@@ -19,9 +19,6 @@ payload="$(cat 2>/dev/null || true)"
 event_name="$(printf '%s' "$payload" | jq -r '.hook_event_name // empty' 2>/dev/null || true)"
 session_id="$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null || true)"
 cwd="$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null || true)"
-prompt_text="$(printf '%s' "$payload" \
-  | jq -r '(.attributes.user_prompt // .attributes.prompt_text // .attributes.prompt // .prompt // empty) | strings' \
-    2>/dev/null || true)"
 tool_name="$(printf '%s' "$payload" \
   | jq -r '
       .attributes.tool_input.tool_name
@@ -44,6 +41,12 @@ pane_id="$(resolve_rovo_hook_pane "$cwd" 2>/dev/null || true)"
 if [ "$event_name" != "on_session_end" ]; then
   mark_pane_hooked "$pane_id"
 fi
+
+case "$event_name" in
+  on_session_start|on_complete)
+    rename_tab_from_session "${HERDR_TAB_ID:-}" "$session_id"
+    ;;
+esac
 
 # on_complete fires when Rovo's backend finishes generating a response, which
 # can be seconds before the TUI finishes rendering it (see the settling note
@@ -114,12 +117,6 @@ case "$event_name" in
 esac
 
 report_agent "$pane_id" "$state" "$custom_status" "$session_id" "$message" || true
-
-if [ "$event_name" = "on_user_prompt" ]; then
-  report_task_name "$pane_id" "$(short_prompt_label "$prompt_text")"
-elif [ "$event_name" = "on_session_start" ]; then
-  report_task_name "$pane_id"
-fi
 
 if [ "$event_name" = "on_session_end" ]; then
   clear_pane_hooked "$pane_id"

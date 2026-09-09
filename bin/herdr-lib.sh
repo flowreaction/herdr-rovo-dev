@@ -522,32 +522,31 @@ short_status() {
   printf '%s' "$1" | tr '\n' ' ' | cut -c 1-80
 }
 
-short_prompt_label() {
-  printf '%s' "$1" | awk '{
-    for (i = 1; i <= NF && count < 3; i++) {
-      word = $i
-      gsub(/^[^[:alnum:]]+/, "", word)
-      gsub(/[^[:alnum:]-]+$/, "", word)
-      lower = tolower(word)
-      if (word != "" && lower !~ /^(a|an|the|can|could|would|you|your|please|for|to|in|of|and|or|is|this|that)$/) {
-        result = result (result == "" ? "" : " ") word
-        count++
-      }
-    }
-    if (count == 1) result = result " Task"
-    print result
-  }'
+rovo_session_title() {
+  local session_id="$1" sessions_dir metadata_file title
+  [ -n "$session_id" ] || return 1
+
+  for sessions_dir in \
+    "${ROVO_SESSIONS_DIR:-}" \
+    "${ROVO_USER_DIR:-$HOME/.rovo}/sessions" \
+    "${ROVODEV_USER_DIR:-$HOME/.rovodev}/sessions"; do
+    [ -n "$sessions_dir" ] || continue
+    metadata_file="$sessions_dir/$session_id/metadata.json"
+    [ -f "$metadata_file" ] || continue
+    title="$(jq -r '(.title // empty) | strings' "$metadata_file" 2>/dev/null || true)"
+    [ -n "$title" ] || continue
+    printf '%s' "$title"
+    return 0
+  done
+
+  return 1
 }
 
-report_task_name() {
-  local pane_id="$1" task_name="${2:-Rovo Dev}"
-  "$(herdr_bin)" pane report-metadata "$pane_id" \
-    --source "$ROVO_SOURCE" \
-    --agent "$ROVO_AGENT" \
-    --applies-to-source "$ROVO_SOURCE" \
-    --clear-display-agent \
-    --token "task_name=$task_name" \
-    >/dev/null 2>&1 || true
+rename_tab_from_session() {
+  local tab_id="$1" session_id="$2" title
+  [ -n "$tab_id" ] || return 0
+  title="$(rovo_session_title "$session_id")" || return 0
+  "$(herdr_bin)" tab rename "$tab_id" "$title" >/dev/null 2>&1 || true
 }
 
 # Resolve the Rovo config.yml to operate on, supporting both CLIs:

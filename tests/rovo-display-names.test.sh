@@ -4,7 +4,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-mkdir -p "$WORK/bin" "$WORK/state"
+mkdir -p "$WORK/bin" "$WORK/state" "$WORK/sessions/session-1"
 LOG="$WORK/herdr.log"
 
 cat > "$WORK/bin/herdr" <<'STUB'
@@ -14,31 +14,43 @@ exit 0
 STUB
 chmod +x "$WORK/bin/herdr"
 
-payload='{"hook_event_name":"on_user_prompt","session_id":"session-1","cwd":"/tmp","attributes":{"user_prompt":"Can you improve the Herdr agent names please?"}}'
-printf '%s' "$payload" | env \
-  PATH="$WORK/bin:$PATH" \
-  HERDR_BIN_PATH="$WORK/bin/herdr" \
-  HERDR_STUB_LOG="$LOG" \
-  HERDR_ROVO_STATE_DIR="$WORK/state" \
-  HERDR_PANE_ID="w1:p3" \
-  HERDR_TAB_ID="w1:t3" \
-  bash "$REPO_ROOT/bin/rovo-herdr-hook"
+cat > "$WORK/sessions/session-1/metadata.json" <<'JSON'
+{"title":"Agent Display Names","is_manual_title":false}
+JSON
+
+run_hook() {
+  local payload="$1" pane_id="$2" tab_id="$3"
+  printf '%s' "$payload" | env \
+    PATH="$WORK/bin:$PATH" \
+    HERDR_BIN_PATH="$WORK/bin/herdr" \
+    HERDR_STUB_LOG="$LOG" \
+    HERDR_ROVO_STATE_DIR="$WORK/state" \
+    ROVO_SESSIONS_DIR="$WORK/sessions" \
+    HERDR_PANE_ID="$pane_id" \
+    HERDR_TAB_ID="$tab_id" \
+    ROVO_SETTLE_TIMEOUT=0 \
+    bash "$REPO_ROOT/bin/rovo-herdr-hook"
+}
 
 status=0
-if ! grep -F "pane report-metadata w1:p3" "$LOG" | grep -Fq -- "--token task_name=improve Herdr agent"; then
-  echo "FAIL: latest prompt should set the sidebar task_name token" >&2
+run_hook '{"hook_event_name":"on_session_start","session_id":"session-1","cwd":"/tmp","attributes":{}}' "w1:p3" "w1:t3"
+if ! grep -Fq "tab rename w1:t3 Agent Display Names" "$LOG"; then
+  echo "FAIL: restored session should use its full semantic title" >&2
   status=1
 fi
-if grep -Fq -- "--display-agent" "$LOG"; then
-  echo "FAIL: task naming should not use the non-sidebar display-agent field" >&2
+
+cat > "$WORK/sessions/session-1/metadata.json" <<'JSON'
+{"title":"Updated Semantic Session Title","is_manual_title":false}
+JSON
+run_hook '{"hook_event_name":"on_complete","session_id":"session-1","cwd":"/tmp","attributes":{}}' "w1:p3" "w1:t3"
+if ! grep -Fq "tab rename w1:t3 Updated Semantic Session Title" "$LOG"; then
+  echo "FAIL: completed session should refresh its semantic title" >&2
   status=1
 fi
-if grep -Fq "tab rename" "$LOG"; then
-  echo "FAIL: prompt naming should not overwrite the Herdr tab name" >&2
-  status=1
-fi
-if ! grep -F "pane report-agent w1:p3" "$LOG" | grep -Fq -- "--agent rovo-dev"; then
-  echo "FAIL: lifecycle identity should remain rovo-dev" >&2
+
+run_hook '{"hook_event_name":"on_session_start","session_id":"session-2","cwd":"/tmp","attributes":{}}' "w1:p4" "w1:t4"
+if grep -Fq "tab rename w1:t4" "$LOG"; then
+  echo "FAIL: missing metadata should leave the existing tab name unchanged" >&2
   status=1
 fi
 
