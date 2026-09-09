@@ -177,6 +177,49 @@ clear_miss_count() {
   rm -f "$(miss_count_file "$pane_id")" 2>/dev/null || true
 }
 
+# --- Agent label persistence -----------------------------------------------
+#
+# The derived agent label (from prompt_text) must survive lifecycle events and
+# settle completion. We persist it per pane so later events (tool calls, errors,
+# completion) can use the same label for consistency.
+
+agent_label_dir() {
+  local dir
+  dir="$(state_dir)/agent-labels"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s' "$dir"
+}
+
+agent_label_file() {
+  local pane_id="$1"
+  printf '%s/%s' "$(agent_label_dir)" "$(printf '%s' "$pane_id" | tr '/' '_')"
+}
+
+get_agent_label() {
+  local pane_id="$1"
+  local file
+  file="$(agent_label_file "$pane_id")"
+  if [ -f "$file" ]; then
+    cat "$file"
+  else
+    printf 'rovo-dev'
+  fi
+}
+
+set_agent_label() {
+  local pane_id="$1" label="$2"
+  local file
+  file="$(agent_label_file "$pane_id")"
+  printf '%s' "$label" > "$file" 2>/dev/null || true
+}
+
+clear_agent_label() {
+  local pane_id="$1"
+  local file
+  file="$(agent_label_file "$pane_id")"
+  rm -f "$file" 2>/dev/null || true
+}
+
 # --- Completion settling & generation guard --------------------------------
 #
 # Rovo's on_complete hook fires the instant its backend finishes generating a
@@ -276,7 +319,9 @@ settle_and_report_complete() {
   [ "$(current_generation "$pane_id")" = "$expected_gen" ] || return 0
   pane_hook_active "$pane_id" || return 0
 
-  report_agent "$pane_id" "idle" "done" "$session_id" "Rovo Dev completed" || true
+  local agent_label
+  agent_label="$(get_agent_label "$pane_id")"
+  report_agent "$pane_id" "idle" "done" "$session_id" "Rovo Dev completed" "$agent_label" || true
 }
 
 # jq must be available for JSON parsing.
@@ -438,11 +483,12 @@ derive_custom_status() {
 # Herdr captures into the plugin log) so a future CLI-contract break stays
 # diagnosable instead of vanishing.
 report_custom_status() {
-  local pane_id="$1" state="$2" custom_status="$3" seq="${4:-}"
+  local pane_id="$1" state="$2" custom_status="$3" seq="${4:-}" agent_label="${5:-}"
   [ -n "$custom_status" ] || return 0
+  [ -z "$agent_label" ] && agent_label="$(get_agent_label "$pane_id")"
   local meta=(pane report-metadata "$pane_id"
     --source "$ROVO_SOURCE"
-    --agent "$ROVO_AGENT"
+    --agent "$agent_label"
     --state-label "$state=$custom_status")
   [ -n "$seq" ] && meta+=(--seq "$seq")
   local err
@@ -461,11 +507,14 @@ report_agent() {
   local pane_id="$1" state="$2" custom_status="$3"
   local agent_session_id="${4:-}"
   local message="${5:-}"
+  local agent_label="${6:-}"
   local seq
   seq="$(date +%s 2>/dev/null || true)"
+  # Use provided agent_label, fall back to persisted label, then to fixed ROVO_AGENT
+  [ -z "$agent_label" ] && agent_label="$(get_agent_label "$pane_id")"
   local args=(pane report-agent "$pane_id"
     --source "$ROVO_SOURCE"
-    --agent "$ROVO_AGENT"
+    --agent "$agent_label"
     --state "$state")
   [ -n "$agent_session_id" ] && args+=(--agent-session-id "$agent_session_id")
   [ -n "$message" ] && args+=(--message "$message")
@@ -484,7 +533,7 @@ report_agent() {
     return "$rc"
   fi
 
-  report_custom_status "$pane_id" "$state" "$custom_status" "$seq"
+  report_custom_status "$pane_id" "$state" "$custom_status" "$seq" "$agent_label"
   return 0
 }
 
@@ -520,6 +569,25 @@ resolve_rovo_hook_pane() {
 
 short_status() {
   printf '%s' "$1" | tr '\n' ' ' | cut -c 1-80
+}
+
+# Print two or three meaningful words from a prompt.
+short_prompt_label() {
+  local label
+  label="$(printf '%s' "$1" | awk '{
+    for (i = 1; i <= NF && count < 3; i++) {
+      word = $i
+      gsub(/^[^[:alnum:]]+|[^[:alnum:]-]+$/, "", word)
+      lower = tolower(word)
+      if (word != "" && lower !~ /^(a|an|the|for|to|in|of|at|and|or|is|as|this|that)$/) {
+        result = result (result == "" ? "" : " ") word
+        count++
+      }
+    }
+    if (count == 1) result = result " Task"
+    print result
+  }')"
+  printf '%s' "${label:-$ROVO_AGENT}" | cut -c 1-80
 }
 
 # Resolve the Rovo config.yml to operate on, supporting both CLIs:

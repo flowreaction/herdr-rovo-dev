@@ -19,6 +19,9 @@ payload="$(cat 2>/dev/null || true)"
 event_name="$(printf '%s' "$payload" | jq -r '.hook_event_name // empty' 2>/dev/null || true)"
 session_id="$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null || true)"
 cwd="$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null || true)"
+prompt_text="$(printf '%s' "$payload" \
+  | jq -r '(.attributes.prompt_text // .attributes.prompt // .prompt // empty) | strings' \
+    2>/dev/null || true)"
 tool_name="$(printf '%s' "$payload" \
   | jq -r '
       .attributes.tool_input.tool_name
@@ -65,10 +68,12 @@ fi
 
 state="unknown"
 custom_status=""
+agent_label=""
 message=""
 
 case "$event_name" in
   on_session_start)
+    clear_agent_label "$pane_id"
     state="idle"
     custom_status="session"
     message="Rovo Dev session started"
@@ -76,6 +81,8 @@ case "$event_name" in
   on_user_prompt)
     state="working"
     custom_status="prompt"
+    agent_label="$(short_prompt_label "$prompt_text")"
+    set_agent_label "$pane_id" "$agent_label"
     message="Rovo Dev received a prompt"
     ;;
   on_tool_start)
@@ -110,11 +117,13 @@ case "$event_name" in
     ;;
 esac
 
-report_agent "$pane_id" "$state" "$custom_status" "$session_id" "$message" || true
+[ -n "$agent_label" ] || agent_label="$(get_agent_label "$pane_id")"
+report_agent "$pane_id" "$state" "$custom_status" "$session_id" "$message" "$agent_label" || true
 
 if [ "$event_name" = "on_session_end" ]; then
   clear_pane_hooked "$pane_id"
   clear_generation "$pane_id"
+  clear_agent_label "$pane_id"
 fi
 
 exit 0
