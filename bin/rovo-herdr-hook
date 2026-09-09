@@ -116,9 +116,9 @@ esac
 report_agent "$pane_id" "$state" "$custom_status" "$session_id" "$message" || true
 
 if [ "$event_name" = "on_user_prompt" ]; then
-  report_display_agent "$pane_id" "$(short_prompt_label "$prompt_text")"
+  report_task_name "$pane_id" "$(short_prompt_label "$prompt_text")"
 elif [ "$event_name" = "on_session_start" ]; then
-  report_display_agent "$pane_id"
+  report_task_name "$pane_id"
 fi
 
 if [ "$event_name" = "on_session_end" ]; then

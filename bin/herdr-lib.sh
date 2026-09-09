@@ -539,18 +539,15 @@ short_prompt_label() {
   }'
 }
 
-report_display_agent() {
-  local pane_id="$1" display_name="${2:-}"
-  local args=(pane report-metadata "$pane_id"
-    --source "$ROVO_SOURCE"
-    --agent "$ROVO_AGENT"
-    --applies-to-source "$ROVO_SOURCE")
-  if [ -n "$display_name" ]; then
-    args+=(--display-agent "$display_name")
-  else
-    args+=(--clear-display-agent)
-  fi
-  "$(herdr_bin)" "${args[@]}" >/dev/null 2>&1 || true
+report_task_name() {
+  local pane_id="$1" task_name="${2:-Rovo Dev}"
+  "$(herdr_bin)" pane report-metadata "$pane_id" \
+    --source "$ROVO_SOURCE" \
+    --agent "$ROVO_AGENT" \
+    --applies-to-source "$ROVO_SOURCE" \
+    --clear-display-agent \
+    --token "task_name=$task_name" \
+    >/dev/null 2>&1 || true
 }
 
 # Resolve the Rovo config.yml to operate on, supporting both CLIs:

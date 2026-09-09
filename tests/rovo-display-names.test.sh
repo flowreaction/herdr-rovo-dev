@@ -25,8 +25,12 @@ printf '%s' "$payload" | env \
   bash "$REPO_ROOT/bin/rovo-herdr-hook"
 
 status=0
-if ! grep -F "pane report-metadata w1:p3" "$LOG" | grep -Fq -- "--display-agent improve Herdr agent"; then
-  echo "FAIL: latest prompt should set a short display-agent name" >&2
+if ! grep -F "pane report-metadata w1:p3" "$LOG" | grep -Fq -- "--token task_name=improve Herdr agent"; then
+  echo "FAIL: latest prompt should set the sidebar task_name token" >&2
+  status=1
+fi
+if grep -Fq -- "--display-agent" "$LOG"; then
+  echo "FAIL: task naming should not use the non-sidebar display-agent field" >&2
   status=1
 fi
 if grep -Fq "tab rename" "$LOG"; then
