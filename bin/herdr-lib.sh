@@ -9,8 +9,33 @@
 readonly ROVO_SOURCE="plugin:rovo-dev"
 readonly ROVO_AGENT="rovo-dev"
 
-# Number of trailing output lines to inspect when classifying pane state.
+# Number of trailing output lines to FETCH from Herdr when classifying pane
+# state. This is scrollback context, not what's necessarily actually on
+# screen right now - see ROVO_STATE_SLICE_LINES below, which controls how
+# much of this fetched window classify_state actually looks at.
 readonly ROVO_READ_LINES="${ROVO_READ_LINES:-60}"
+
+# Number of lines, counted from the BOTTOM of the fetched output, that
+# classify_state actually pattern-matches against. Deliberately much smaller
+# than ROVO_READ_LINES: a pane's scrollback can carry now-stale status text
+# (e.g. a "Rovo Dev is thinking" or an active-tool line from an earlier,
+# already-finished turn) that has scrolled up but is still within the fetched
+# window. Matching against the whole fetched window lets that stale text
+# outvote a current, genuinely idle bottom-of-screen prompt and misreport a
+# quiet pane as "working" - observed live for old panes that predate hook
+# installation, which have enough scrollback for this to bite (hooked panes
+# are unaffected; the scanner trusts their hook reports and never calls
+# classify_state for them at all). Restricting matching to a small slice near
+# the bottom approximates "what's actually on screen right now" from a plain
+# scrollback read.
+#
+# 15 was still too generous: a live audit pane (w1:p3) was visibly idle but
+# had its own assistant message mention the phrase "Rovo Dev is thinking"
+# 14 lines from the bottom - inside a 15-line slice, so it still misreported
+# as working. Separately measuring real working/idle footer markers across
+# active and idle panes (w1:p2, w2) found all of them within the bottom 8
+# lines, so the default is pinned there instead. Kept overridable for tests.
+readonly ROVO_STATE_SLICE_LINES="${ROVO_STATE_SLICE_LINES:-8}"
 
 # Resolve the Herdr binary. Inside a plugin/pane, HERDR_BIN_PATH is injected;
 # fall back to `herdr` on PATH for manual runs.
@@ -336,12 +361,18 @@ pane_is_rovo() {
 # Prints one of: working | blocked | idle | unknown
 classify_state() {
   local pane_id="$1"
-  local out
+  local out slice
   out="$("$(herdr_bin)" pane read "$pane_id" --source recent-unwrapped \
     --lines "$ROVO_READ_LINES" 2>/dev/null)" || {
     printf 'unknown'
     return 0
   }
+
+  # Pattern-match only the bottom slice (see ROVO_STATE_SLICE_LINES above),
+  # never the whole fetched window - the whole window can contain stale
+  # status text from an earlier, already-finished turn that no longer
+  # reflects the pane's current state.
+  slice="$(printf '%s' "$out" | tail -n "$ROVO_STATE_SLICE_LINES")"
 
   # Working: Rovo is actively thinking or executing a tool call.
   #
@@ -355,21 +386,21 @@ classify_state() {
   # idle-state check below, which matches the "? for shortcuts" footer that
   # is *always* visible regardless of whether Rovo is actively working -
   # causing working sessions to be misreported as idle.
-  if printf '%s' "$out" | grep -Eq \
+  if printf '%s' "$slice" | grep -Eq \
     'Rovo( Dev)? is (thinking|working|running)|(Esc to interrupt)|(Enter to queue,? Ctrl\+Enter to steer)|(▶[^|]+\|[[:space:]]*[a-z_]+[[:space:]]*$)'; then
     printf 'working'
     return 0
   fi
 
   # Blocked: Rovo is waiting on the user for a decision or input.
-  if printf '%s' "$out" | grep -Eq \
+  if printf '%s' "$slice" | grep -Eq \
     '\[y/n\]|\(y/n\)|Do you want to|Waiting for (your )?(input|confirmation)|Approve|Allow this|Choose an option|Select an option|Press Enter to'; then
     printf 'blocked'
     return 0
   fi
 
   # Idle: an interactive prompt is present and nothing is in flight.
-  if printf '%s' "$out" | grep -Eq '\? for shortcuts|agent mode:'; then
+  if printf '%s' "$slice" | grep -Eq '\? for shortcuts|agent mode:'; then
     printf 'idle'
     return 0
   fi

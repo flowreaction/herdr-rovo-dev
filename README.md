@@ -84,6 +84,13 @@ Note: the footer `? for shortcuts.` is shown by the Rovo CLI at all times, wheth
 or not a run is in flight, so the `working`/`blocked` checks are evaluated first
 and take priority over the `idle` check.
 
+Only a small slice near the *bottom* of the fetched output is pattern-matched,
+not all of it - a pane's scrollback can still contain a stale "Rovo is
+thinking" or tool-call line from an earlier, already-finished turn, and
+matching against that would outvote a current, genuinely idle prompt. This
+only affects the scan fallback (see the on_complete note above for the
+equivalent hook-side concern).
+
 The current Rovo `agent mode:` (e.g. `plan`) is reported as the agent's custom status.
 
 ## Install
