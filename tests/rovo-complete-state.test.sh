@@ -34,5 +34,9 @@ if ! grep -F "pane report-metadata w1:p3" "$LOG" | grep -Fq -- "--state-label id
   echo "FAIL: on_complete should synchronously label idle as done" >&2
   status=1
 fi
+if grep -F "pane report-agent w1:p3" "$LOG" | grep -Fq -- "--seq"; then
+  echo "FAIL: synchronous lifecycle events should not use colliding second-resolution sequences" >&2
+  status=1
+fi
 
 exit "$status"
