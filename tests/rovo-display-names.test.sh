@@ -14,7 +14,7 @@ exit 0
 STUB
 chmod +x "$WORK/bin/herdr"
 
-payload='{"hook_event_name":"on_user_prompt","session_id":"session-1","cwd":"/tmp","attributes":{"prompt_text":"Can you improve the Herdr agent names please?"}}'
+payload='{"hook_event_name":"on_user_prompt","session_id":"session-1","cwd":"/tmp","attributes":{"user_prompt":"Can you improve the Herdr agent names please?"}}'
 printf '%s' "$payload" | env \
   PATH="$WORK/bin:$PATH" \
   HERDR_BIN_PATH="$WORK/bin/herdr" \

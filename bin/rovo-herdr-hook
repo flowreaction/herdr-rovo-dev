@@ -20,7 +20,7 @@ event_name="$(printf '%s' "$payload" | jq -r '.hook_event_name // empty' 2>/dev/
 session_id="$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null || true)"
 cwd="$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null || true)"
 prompt_text="$(printf '%s' "$payload" \
-  | jq -r '(.attributes.prompt_text // .attributes.prompt // .prompt // empty) | strings' \
+  | jq -r '(.attributes.user_prompt // .attributes.prompt_text // .attributes.prompt // .prompt // empty) | strings' \
     2>/dev/null || true)"
 tool_name="$(printf '%s' "$payload" \
   | jq -r '
