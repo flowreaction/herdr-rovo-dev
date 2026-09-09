@@ -133,30 +133,6 @@ check "$rc" "report_agent still returns 0 when only report-metadata fails (got $
 assert_contains "$HERDR_STUB_LOG" "pane report-agent wT:p5" "core state reported despite metadata failure"
 assert_contains "$WORK/err.log" "report-metadata' (custom status) failed" "metadata failure is logged"
 
-echo "test: report_agent uses persisted agent label when provided"
-reset_stub
-# First set an agent label for the pane
-set_agent_label "wT:p6" "Custom Agent"
-report_agent "wT:p6" "idle" "" >/dev/null 2>&1
-assert_contains "$HERDR_STUB_LOG" "pane report-agent wT:p6" "core state reported"
-assert_contains "$HERDR_STUB_LOG" "--agent Custom Agent" "persisted agent label used in report-agent"
-
-echo "test: report_agent with explicit agent_label overrides persisted label"
-reset_stub
-# Pre-set a label (should be overridden by the explicit parameter)
-set_agent_label "wT:p7" "Old Label"
-report_agent "wT:p7" "working" "" "" "" "Explicit Label" >/dev/null 2>&1
-assert_contains "$HERDR_STUB_LOG" "--agent Explicit Label" "explicit agent label parameter used"
-
-echo "test: report_custom_status uses same agent label as report-agent"
-reset_stub
-set_agent_label "wT:p8" "Derived Label"
-report_agent "wT:p8" "working" "tool:test" >/dev/null 2>&1
-# Should see both report-agent and report-metadata with the same agent label
-assert_contains "$HERDR_STUB_LOG" "pane report-agent wT:p8" "core report made"
-assert_contains "$HERDR_STUB_LOG" "pane report-metadata wT:p8" "metadata report made"
-assert_count "$HERDR_STUB_LOG" "--agent Derived Label" 2 "both reports use the same agent label"
-
 # ---------------------------------------------------------------------------
 echo
 if [ "$TESTS_FAILED" -eq 0 ]; then

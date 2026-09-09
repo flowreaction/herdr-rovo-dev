@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/bin" "$WORK/state"
+LOG="$WORK/herdr.log"
+
+cat > "$WORK/bin/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HERDR_STUB_LOG"
+exit 0
+STUB
+chmod +x "$WORK/bin/herdr"
+
+payload='{"hook_event_name":"on_user_prompt","session_id":"session-1","cwd":"/tmp","attributes":{"prompt_text":"Can you improve the Herdr agent names please?"}}'
+printf '%s' "$payload" | env \
+  PATH="$WORK/bin:$PATH" \
+  HERDR_BIN_PATH="$WORK/bin/herdr" \
+  HERDR_STUB_LOG="$LOG" \
+  HERDR_ROVO_STATE_DIR="$WORK/state" \
+  HERDR_PANE_ID="w1:p3" \
+  HERDR_TAB_ID="w1:t3" \
+  bash "$REPO_ROOT/bin/rovo-herdr-hook"
+
+status=0
+if ! grep -Fq "tab rename w1:t3 improve Herdr agent" "$LOG"; then
+  echo "FAIL: latest prompt should rename the Herdr tab to at most three meaningful words" >&2
+  status=1
+fi
+if ! grep -F "pane report-agent w1:p3" "$LOG" | grep -Fq -- "--agent rovo-dev"; then
+  echo "FAIL: lifecycle identity should remain rovo-dev" >&2
+  status=1
+fi
+
+exit "$status"
