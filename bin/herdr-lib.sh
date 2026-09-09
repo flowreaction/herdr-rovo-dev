@@ -7,6 +7,7 @@
 
 # Stable identifiers used when reporting agents to Herdr.
 readonly ROVO_SOURCE="plugin:rovo-dev"
+readonly ROVO_TITLE_SOURCE="plugin:rovo-dev:title"
 readonly ROVO_AGENT="rovo-dev"
 
 # Number of trailing output lines to FETCH from Herdr when classifying pane
@@ -550,7 +551,7 @@ report_session_title() {
     title="Rovo Dev"
   fi
   "$(herdr_bin)" pane report-metadata "$pane_id" \
-    --source "$ROVO_SOURCE" \
+    --source "$ROVO_TITLE_SOURCE" \
     --agent "$ROVO_AGENT" \
     --applies-to-source "$ROVO_SOURCE" \
     --display-agent "$title" \

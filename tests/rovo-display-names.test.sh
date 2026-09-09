@@ -34,6 +34,10 @@ run_hook() {
 
 status=0
 run_hook '{"hook_event_name":"on_session_start","session_id":"session-1","cwd":"/tmp","attributes":{}}' "w1:p3" "w1:t3"
+if ! grep -F "pane report-metadata w1:p3" "$LOG" | grep -Fq -- "--source plugin:rovo-dev:title"; then
+  echo "FAIL: title metadata should use a source separate from lifecycle state" >&2
+  status=1
+fi
 if ! grep -F "pane report-metadata w1:p3" "$LOG" | grep -Fq -- "--display-agent Agent Display Names"; then
   echo "FAIL: restored session should replace the visible agent name" >&2
   status=1
