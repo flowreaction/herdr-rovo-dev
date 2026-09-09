@@ -47,6 +47,15 @@ if grep -Fq "tab rename" "$LOG"; then
 fi
 
 cat > "$WORK/sessions/session-1/metadata.json" <<'JSON'
+{"title":"Renamed During Session","is_manual_title":true}
+JSON
+run_hook '{"hook_event_name":"on_user_prompt","session_id":"session-1","cwd":"/tmp","attributes":{}}' "w1:p3"
+if ! grep -F "pane report-metadata w1:p3" "$LOG" | grep -Fq -- "--display-agent Renamed During Session"; then
+  echo "FAIL: lifecycle events should refresh titles changed during a session" >&2
+  status=1
+fi
+
+cat > "$WORK/sessions/session-1/metadata.json" <<'JSON'
 {"title":"Updated Semantic Session Title","is_manual_title":false}
 JSON
 run_hook '{"hook_event_name":"on_complete","session_id":"session-1","cwd":"/tmp","attributes":{}}' "w1:p3"

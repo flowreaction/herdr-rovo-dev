@@ -42,11 +42,9 @@ if [ "$event_name" != "on_session_end" ]; then
   mark_pane_hooked "$pane_id"
 fi
 
-case "$event_name" in
-  on_session_start|on_complete)
-    report_session_title "$pane_id" "$session_id"
-    ;;
-esac
+if [ -n "$session_id" ]; then
+  report_session_title "$pane_id" "$session_id"
+fi
 
 # Rovo's on_complete event is authoritative. Reporting synchronously avoids a
 # detached child being terminated by the hook runner and leaving the pane
