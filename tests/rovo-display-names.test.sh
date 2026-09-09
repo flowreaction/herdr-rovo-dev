@@ -34,8 +34,8 @@ run_hook() {
 
 status=0
 run_hook '{"hook_event_name":"on_session_start","session_id":"session-1","cwd":"/tmp","attributes":{}}' "w1:p3" "w1:t3"
-if ! grep -Fq "tab rename w1:t3 Agent Display Names" "$LOG"; then
-  echo "FAIL: restored session should use its full semantic title" >&2
+if ! grep -F "pane report-metadata w1:p3" "$LOG" | grep -Fq -- "--token session_title=Agent Display Names"; then
+  echo "FAIL: restored session should publish its full semantic title" >&2
   status=1
 fi
 
@@ -43,14 +43,18 @@ cat > "$WORK/sessions/session-1/metadata.json" <<'JSON'
 {"title":"Updated Semantic Session Title","is_manual_title":false}
 JSON
 run_hook '{"hook_event_name":"on_complete","session_id":"session-1","cwd":"/tmp","attributes":{}}' "w1:p3" "w1:t3"
-if ! grep -Fq "tab rename w1:t3 Updated Semantic Session Title" "$LOG"; then
-  echo "FAIL: completed session should refresh its semantic title" >&2
+if ! grep -F "pane report-metadata w1:p3" "$LOG" | grep -Fq -- "--token session_title=Updated Semantic Session Title"; then
+  echo "FAIL: completion should refresh the semantic title token" >&2
   status=1
 fi
 
 run_hook '{"hook_event_name":"on_session_start","session_id":"session-2","cwd":"/tmp","attributes":{}}' "w1:p4" "w1:t4"
-if grep -Fq "tab rename w1:t4" "$LOG"; then
-  echo "FAIL: missing metadata should leave the existing tab name unchanged" >&2
+if ! grep -F "pane report-metadata w1:p4" "$LOG" | grep -Fq -- "--token session_title=Rovo Dev"; then
+  echo "FAIL: sessions without a title should keep a visible fallback" >&2
+  status=1
+fi
+if grep -Fq "tab rename" "$LOG"; then
+  echo "FAIL: semantic titles must not overwrite tab names" >&2
   status=1
 fi
 

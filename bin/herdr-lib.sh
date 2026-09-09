@@ -542,11 +542,17 @@ rovo_session_title() {
   return 1
 }
 
-rename_tab_from_session() {
-  local tab_id="$1" session_id="$2" title
-  [ -n "$tab_id" ] || return 0
-  title="$(rovo_session_title "$session_id")" || return 0
-  "$(herdr_bin)" tab rename "$tab_id" "$title" >/dev/null 2>&1 || true
+report_session_title() {
+  local pane_id="$1" session_id="$2" title
+  title="$(rovo_session_title "$session_id")" || title="Rovo Dev"
+  "$(herdr_bin)" pane report-metadata "$pane_id" \
+    --source "$ROVO_SOURCE" \
+    --agent "$ROVO_AGENT" \
+    --applies-to-source "$ROVO_SOURCE" \
+    --clear-display-agent \
+    --clear-token task_name \
+    --token "session_title=$title" \
+    >/dev/null 2>&1 || true
 }
 
 # Resolve the Rovo config.yml to operate on, supporting both CLIs:
