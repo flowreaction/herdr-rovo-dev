@@ -22,7 +22,6 @@ printf '%s' "$payload" | env \
   HERDR_ROVO_STATE_DIR="$WORK/state" \
   HERDR_PANE_ID="w1:p3" \
   HERDR_TAB_ID="w1:t3" \
-  ROVO_SETTLE_MAX_ITERATIONS=0 \
   bash "$REPO_ROOT/bin/rovo-herdr-hook"
 
 status=0

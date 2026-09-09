@@ -27,7 +27,6 @@ run_hook() {
     HERDR_ROVO_STATE_DIR="$WORK/state" \
     ROVO_SESSIONS_DIR="$WORK/sessions" \
     HERDR_PANE_ID="$pane_id" \
-    ROVO_SETTLE_TIMEOUT=0 \
     bash "$REPO_ROOT/bin/rovo-herdr-hook"
 }
 
