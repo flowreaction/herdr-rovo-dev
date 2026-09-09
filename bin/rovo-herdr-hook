@@ -48,25 +48,12 @@ case "$event_name" in
     ;;
 esac
 
-# on_complete fires when Rovo's backend finishes generating a response, which
-# can be seconds before the TUI finishes rendering it (see the settling note
-# in herdr-lib.sh). Reporting idle/done here, synchronously, would tell Herdr
-# the pane is quiet before the screen agrees. So this event reports nothing
-# itself; it hands off to a detached settle task that polls the pane's actual
-# rendered state and only then reports idle/done, guarded against a newer
-# prompt superseding this completion in the meantime.
+# Rovo's on_complete event is authoritative. Reporting synchronously avoids a
+# detached child being terminated by the hook runner and leaving the pane
+# permanently marked as working.
 if [ "$event_name" = "on_complete" ]; then
-  gen="$(current_generation "$pane_id")"
-  (
-    settle_and_report_complete "$pane_id" "$session_id" "$gen"
-  ) </dev/null >/dev/null 2>&1 &
+  report_agent "$pane_id" "idle" "done" "$session_id" "Rovo Dev completed" || true
   exit 0
-fi
-
-if [ "$event_name" = "on_user_prompt" ]; then
-  bump_generation "$pane_id" >/dev/null
-elif [ "$event_name" = "on_session_start" ]; then
-  clear_generation "$pane_id"
 fi
 
 state="unknown"
@@ -120,7 +107,6 @@ report_agent "$pane_id" "$state" "$custom_status" "$session_id" "$message" || tr
 
 if [ "$event_name" = "on_session_end" ]; then
   clear_pane_hooked "$pane_id"
-  clear_generation "$pane_id"
 fi
 
 exit 0
