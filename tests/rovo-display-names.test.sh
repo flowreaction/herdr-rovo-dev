@@ -25,8 +25,12 @@ printf '%s' "$payload" | env \
   bash "$REPO_ROOT/bin/rovo-herdr-hook"
 
 status=0
-if ! grep -Fq "tab rename w1:t3 improve Herdr agent" "$LOG"; then
-  echo "FAIL: latest prompt should rename the Herdr tab to at most three meaningful words" >&2
+if ! grep -F "pane report-metadata w1:p3" "$LOG" | grep -Fq -- "--display-agent improve Herdr agent"; then
+  echo "FAIL: latest prompt should set a short display-agent name" >&2
+  status=1
+fi
+if grep -Fq "tab rename" "$LOG"; then
+  echo "FAIL: prompt naming should not overwrite the Herdr tab name" >&2
   status=1
 fi
 if ! grep -F "pane report-agent w1:p3" "$LOG" | grep -Fq -- "--agent rovo-dev"; then

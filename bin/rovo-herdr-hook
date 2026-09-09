@@ -62,10 +62,6 @@ fi
 
 if [ "$event_name" = "on_user_prompt" ]; then
   bump_generation "$pane_id" >/dev/null
-  tab_label="$(short_prompt_label "$prompt_text")"
-  if [ -n "${HERDR_TAB_ID:-}" ] && [ -n "$tab_label" ]; then
-    "$(herdr_bin)" tab rename "$HERDR_TAB_ID" "$tab_label" >/dev/null 2>&1 || true
-  fi
 elif [ "$event_name" = "on_session_start" ]; then
   clear_generation "$pane_id"
 fi
@@ -118,6 +114,12 @@ case "$event_name" in
 esac
 
 report_agent "$pane_id" "$state" "$custom_status" "$session_id" "$message" || true
+
+if [ "$event_name" = "on_user_prompt" ]; then
+  report_display_agent "$pane_id" "$(short_prompt_label "$prompt_text")"
+elif [ "$event_name" = "on_session_start" ]; then
+  report_display_agent "$pane_id"
+fi
 
 if [ "$event_name" = "on_session_end" ]; then
   clear_pane_hooked "$pane_id"
