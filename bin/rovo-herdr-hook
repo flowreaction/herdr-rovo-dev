@@ -44,7 +44,7 @@ fi
 
 case "$event_name" in
   on_session_start|on_complete)
-    report_session_title "$pane_id" "$session_id"
+    report_session_title "$pane_id" "${HERDR_TAB_ID:-}" "$session_id"
     ;;
 esac
 

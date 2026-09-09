@@ -543,13 +543,17 @@ rovo_session_title() {
 }
 
 report_session_title() {
-  local pane_id="$1" session_id="$2" title
-  title="$(rovo_session_title "$session_id")" || title="Rovo Dev"
+  local pane_id="$1" tab_id="$2" session_id="$3" title
+  if title="$(rovo_session_title "$session_id")"; then
+    [ -z "$tab_id" ] || "$(herdr_bin)" tab rename "$tab_id" "$title" >/dev/null 2>&1 || true
+  else
+    title="Rovo Dev"
+  fi
   "$(herdr_bin)" pane report-metadata "$pane_id" \
     --source "$ROVO_SOURCE" \
     --agent "$ROVO_AGENT" \
     --applies-to-source "$ROVO_SOURCE" \
-    --clear-display-agent \
+    --display-agent "$title" \
     --clear-token task_name \
     --token "session_title=$title" \
     >/dev/null 2>&1 || true
