@@ -178,6 +178,61 @@ check "$([ "$call_count" -ge 1 ] && echo 0 || echo 1)" \
 assert_eq "$bad_count" "0" \
   "every report_agent call in scan-rovo-panes stays legacy-only (exactly 3 args, no OSC override)"
 
+# =============================================================================
+echo "test: bin/rovo-herdr-hook - every registered Rovo event reaches a valid OSC state"
+# install-rovo-hooks registers exactly these 8 event names with Rovo (see its
+# EVENTS array). This locks in, end to end through the real hook script (not
+# just by reading its case statement), that each one maps to a valid OSC 7501
+# state - the catch-all "*" branch (no registered event ever reaches it) is
+# intentionally excluded.
+HOOK_WORK="$(mktemp -d)"
+mkdir -p "$HOOK_WORK/bin" "$HOOK_WORK/state" "$HOOK_WORK/sessions/sess-e2e"
+cat > "$HOOK_WORK/bin/herdr" <<'HOOK_STUB'
+#!/usr/bin/env bash
+exit 0
+HOOK_STUB
+chmod +x "$HOOK_WORK/bin/herdr"
+
+run_hook_e2e() { # <event_name> <osc_target_file> [tool_name]
+  local event="$1" osc_target="$2" tool_name="${3:-}"
+  printf '{"hook_event_name":"%s","session_id":"sess-e2e","cwd":"/tmp","attributes":{"tool_input":{"tool_name":"%s"}}}' \
+    "$event" "$tool_name" | env \
+    PATH="$HOOK_WORK/bin:$PATH" \
+    HERDR_BIN_PATH="$HOOK_WORK/bin/herdr" \
+    HERDR_ROVO_STATE_DIR="$HOOK_WORK/state" \
+    ROVO_SESSIONS_DIR="$HOOK_WORK/sessions" \
+    HERDR_PANE_ID="eT:p9" \
+    HERDR_OSC_TTY="$osc_target" \
+    bash "$REPO_ROOT/bin/rovo-herdr-hook" >/dev/null 2>&1
+}
+
+check_event_osc() { # <event_name> <expected-state> [tool_name]
+  local event="$1" expected="$2" tool_name="${3:-}"
+  local osc="$HOOK_WORK/osc-$event.raw"
+  run_hook_e2e "$event" "$osc" "$tool_name"
+  assert_contains "$osc" "state=${expected}:app=rovo-dev" \
+    "$event reaches the Herdr app with OSC state '$expected'"
+}
+
+check_event_osc "on_session_start" "idle"
+check_event_osc "on_user_prompt" "working"
+check_event_osc "on_tool_start" "working" "some_other_tool"
+check_event_osc "on_tool_permission" "blocked"
+check_event_osc "on_tool_end" "working"
+check_event_osc "on_error" "error"
+check_event_osc "on_session_end" "idle"
+check_event_osc "on_complete" "done"
+
+# on_tool_start with tool_name=ask_user_questions takes the interactive-wait
+# path instead of the generic "working" branch - it must report blocked, not
+# working, since Rovo is asking the user a question.
+osc="$HOOK_WORK/osc-interactive-wait.raw"
+run_hook_e2e "on_tool_start" "$osc" "ask_user_questions"
+assert_contains "$osc" "state=blocked:app=rovo-dev:kind=question" \
+  "on_tool_start(ask_user_questions) reaches the Herdr app as blocked/question, not working"
+
+rm -rf "$HOOK_WORK"
+
 # ---------------------------------------------------------------------------
 echo
 if [ "$TESTS_FAILED" -eq 0 ]; then
