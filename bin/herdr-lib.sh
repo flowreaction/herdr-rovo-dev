@@ -373,12 +373,66 @@ report_custom_status() {
 # rejected it), so callers can tell a real report from a failed one. The custom
 # status, if any, is reported best-effort via report_custom_status and never
 # affects this return code.
+# Return 0 if $1 is a state word the Herdr app's OSC 7501 (Program Status
+# Protocol) understands, 1 otherwise. Core stores status as reported and
+# never guesses, so an invalid word here must never be sent.
+is_valid_osc_state() {
+  case "$1" in
+    idle | working | done | blocked | error) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Report this pane's status directly to the Herdr app via OSC 7501, the
+# Program Status Protocol (see https://herdr.dev/core/). Unlike the legacy
+# `herdr pane report-agent` CLI call below (which talks to the old herdr
+# daemon), this writes the escape sequence straight to the controlling
+# terminal, which only works when the caller actually shares a tty with the
+# Rovo pane - true for bin/rovo-herdr-hook (a child process of Rovo itself),
+# but NOT for bin/scan-rovo-panes (a detached plugin action with no reliable
+# tty of its own). Callers that cannot vouch for sharing the pane's tty must
+# leave $1 empty rather than guess, or they risk writing another pane's
+# status onto an unrelated terminal.
+#
+# Always best-effort: never fails the caller, and silently does nothing when
+# there is no controlling terminal or the state is empty/invalid.
+# HERDR_OSC_TTY overrides the write target (tests only).
+emit_agent_osc7501() {
+  local state="$1" kind="${2:-}"
+  [ -n "$state" ] || return 0
+  is_valid_osc_state "$state" || return 0
+  local target="${HERDR_OSC_TTY:-/dev/tty}"
+  local payload="state=${state}:app=${ROVO_AGENT}"
+  [ -n "$kind" ] && payload="${payload}:kind=${kind}"
+  { printf '\e]7501;%s\e\\' "$payload" > "$target"; } 2>/dev/null || true
+}
+
+# Report a pane's agent state to both Herdr generations:
+#
+#   - The new Herdr app, via OSC 7501 (emit_agent_osc7501 above). Only
+#     attempted when the caller passes a non-empty, valid $6/$7 - see that
+#     function's caveat about sharing the pane's tty.
+#   - The classic herdr daemon, via the `pane report-agent` CLI below.
+#
+# The OSC report happens first and independently of the legacy CLI call, so
+# it still works in an environment that only has the new Herdr app installed
+# (where the `herdr` CLI may be missing or may error out).
+#
+# Returns the exit status of the legacy `report-agent` call (non-zero when
+# Herdr rejected it), so callers can tell a real report from a failed one,
+# matching this function's pre-existing contract. The OSC report's success or
+# failure never affects this return code.
 report_agent() {
   local pane_id="$1" state="$2" custom_status="$3"
   local agent_session_id="${4:-}"
   local message="${5:-}"
+  local osc_state="${6:-}"
+  local osc_kind="${7:-}"
   local seq
   seq="$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null || true)"
+
+  emit_agent_osc7501 "$osc_state" "$osc_kind"
+
   local args=(pane report-agent "$pane_id"
     --source "$ROVO_SOURCE"
     --agent "$ROVO_AGENT"

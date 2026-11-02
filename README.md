@@ -16,6 +16,20 @@ Herdr can track terminal AI-agent sessions and show their live state (working, b
 
 This plugin uses Herdr's `pane report-agent` API to surface Rovo CLI and Rovo Dev CLI sessions.
 
+It reports to **both** Herdr generations, independently and at the same time:
+
+- The classic `herdr` daemon/CLI, via `pane report-agent` (as above). This is
+  the only reporting path for the pane-scanning fallback below.
+- The newer [Herdr app](https://herdr.dev/core/), which has no plugin system
+  of its own and recognizes agents only through **OSC 7501**, the Program
+  Status Protocol: the foreground program writes a status escape sequence
+  straight to its own terminal, and Herdr's core picks it up live, with no
+  install step. `bin/rovo-herdr-hook` writes this directly to its controlling
+  terminal (which, as a child process of Rovo, is the pane's own tty) on
+  every lifecycle event. The pane-scanning fallback does **not** send OSC
+  7501: it runs detached from the pane, with no reliable tty of its own, so
+  it only ever uses the classic `pane report-agent` path.
+
 It has two reporting paths, and **hooks always take priority** over scanning
 once they are active for a pane:
 
