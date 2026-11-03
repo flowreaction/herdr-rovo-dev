@@ -145,6 +145,113 @@ clear_interactive_wait() {
   rm -f "$(interactive_wait_file "$1")" 2>/dev/null || true
 }
 
+# --- Session -> pane cache --------------------------------------------------
+#
+# resolve_rovo_hook_pane (below) normally identifies the calling pane from
+# HERDR_PANE_ID, or failing that, by matching the event's cwd against a live
+# pane's foreground cwd + foreground process. Both can stop working partway
+# through a long-running session:
+#
+#   - HERDR_PANE_ID is inherited once, at Rovo's own process start. If Herdr
+#     reassigns pane/tab ids afterwards (e.g. the pane is moved, or the
+#     workspace is reorganized), Rovo's hooks keep seeing the OLD value for
+#     the rest of that process's life - observed live, not hypothetical.
+#   - The cwd+foreground-process match only holds while Rovo itself is the
+#     pane's foreground process. A coding agent's own tool calls routinely
+#     become the foreground process instead, often in a different cwd, which
+#     makes this heuristic fail for the rest of that tool call.
+#   - A session relayed through Herdr's own managed-agent subsystem
+#     (herdr-core, e.g. an `herdr agent start`-style launch) never receives
+#     HERDR_PANE_ID at all, and is never the pane's OS-visible foreground
+#     process either - both paths above are unresolvable for its entire
+#     life, not just partway through. For this case only,
+#     resolve_rovo_hook_pane falls back to Herdr's own documented guidance
+#     (`herdr --skill`: an ambient-pane-id-less caller should target the
+#     focused pane), guarded against concurrently-running sessions by
+#     refusing a pane another live session already claimed.
+#
+# Once any path above resolves a pane for a given session_id, that mapping is
+# cached here and reused as a fallback on a later event where the stronger
+# paths fail. A session id is Rovo's own, process-lifetime-scoped identifier,
+# so this cannot leak a pane assignment across unrelated Rovo processes.
+session_pane_dir() {
+  local dir
+  dir="$(state_dir)/session-pane"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s' "$dir"
+}
+
+session_pane_file() {
+  local session_id="$1"
+  printf '%s/%s' "$(session_pane_dir)" "$(printf '%s' "$session_id" | tr '/' '_')"
+}
+
+# Remember pane_id as the resolved pane for session_id. Best-effort: a failure
+# to persist this just means a future fallback lookup misses, same as never
+# having cached it.
+cache_session_pane() {
+  local session_id="$1" pane_id="$2"
+  [ -n "$session_id" ] && [ -n "$pane_id" ] || return 0
+  printf '%s' "$pane_id" > "$(session_pane_file "$session_id")" 2>/dev/null || true
+}
+
+# Print the pane_id previously cached for session_id, if any. Returns 1 (and
+# prints nothing) when there is no cache entry.
+cached_session_pane() {
+  local session_id="$1" pane_id
+  [ -n "$session_id" ] || return 1
+  pane_id="$(cat "$(session_pane_file "$session_id")" 2>/dev/null || true)"
+  [ -n "$pane_id" ] || return 1
+  printf '%s' "$pane_id"
+}
+
+# Forget a session's cached pane (session ended; a reused session_id - should
+# one ever occur - must re-earn its mapping rather than inherit a stale one).
+clear_session_pane() {
+  local session_id="$1"
+  [ -n "$session_id" ] || return 0
+  rm -f "$(session_pane_file "$session_id")" 2>/dev/null || true
+}
+
+# True when some OTHER live session's cache entry already points at pane_id.
+# Used to guard the focused-pane fallback below: refuses to claim a pane that
+# a different, concurrently-running Rovo session has already resolved to,
+# so two sessions running at once cannot both be attributed to one pane.
+pane_claimed_by_other_session() {
+  local pane_id="$1" session_id="$2" dir f own_file other_pane
+  [ -n "$pane_id" ] || return 1
+  dir="$(session_pane_dir)"
+  own_file="$(session_pane_file "$session_id")"
+  for f in "$dir"/*; do
+    [ -f "$f" ] || continue
+    [ "$f" = "$own_file" ] && continue
+    other_pane="$(cat "$f" 2>/dev/null || true)"
+    [ "$other_pane" = "$pane_id" ] && return 0
+  done
+  return 1
+}
+
+# True when pane_id is confirmed to still exist. Used to guard trusting a
+# possibly-stale HERDR_PANE_ID (see resolve_rovo_hook_pane below): confirmed
+# live that a pane/workspace torn down after Rovo's process started leaves
+# HERDR_PANE_ID pointing at an id `herdr pane get` now reports as
+# {"error":{"code":"pane_not_found",...}}.
+#
+# Deliberately fails OPEN (treats the pane as existing) on anything other
+# than that specific, confirmed error code - an unparseable response, an
+# unreachable Herdr socket, or an older Herdr CLI without this exact error
+# shape all leave this helper unable to tell, and HERDR_PANE_ID is the most
+# reliable path resolve_rovo_hook_pane has when it is not positively known to
+# be wrong. This also matches every existing stub herdr used by other tests,
+# none of which model `pane get` at all.
+pane_exists() {
+  local pane_id="$1" pane_json error_code
+  [ -n "$pane_id" ] || return 1
+  pane_json="$("$(herdr_bin)" pane get "$pane_id" 2>/dev/null)"
+  error_code="$(printf '%s' "$pane_json" | jq -r '.error.code // empty' 2>/dev/null)"
+  [ "$error_code" != "pane_not_found" ]
+}
+
 # --- Exit-reset debounce ---------------------------------------------------
 #
 # The scanner resets a previously-tracked pane to idle/"exited" once it is no
@@ -373,12 +480,117 @@ report_custom_status() {
 # rejected it), so callers can tell a real report from a failed one. The custom
 # status, if any, is reported best-effort via report_custom_status and never
 # affects this return code.
+# Return 0 if $1 is a state word the Herdr app's OSC 7501 (Program Status
+# Protocol) understands, 1 otherwise. Core stores status as reported and
+# never guesses, so an invalid word here must never be sent.
+is_valid_osc_state() {
+  case "$1" in
+    idle | working | done | blocked | error) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Report this pane's status directly to the Herdr app via OSC 7501, the
+# Program Status Protocol (see https://herdr.dev/core/). Unlike the legacy
+# `herdr pane report-agent` CLI call below (which talks to the old herdr
+# daemon), this writes the escape sequence straight to the controlling
+# terminal, which only works when the caller actually shares a tty with the
+# Rovo pane - true for bin/rovo-herdr-hook (a child process of Rovo itself),
+# but NOT for bin/scan-rovo-panes (a detached plugin action with no reliable
+# tty of its own). Callers that cannot vouch for sharing the pane's tty must
+# leave $1 empty rather than guess, or they risk writing another pane's
+# status onto an unrelated terminal.
+#
+# Always best-effort: never fails the caller, and silently does nothing when
+# there is no controlling terminal or the state is empty/invalid.
+# HERDR_OSC_TTY overrides the write target (tests only).
+emit_agent_osc7501() {
+  local state="$1" kind="${2:-}"
+  [ -n "$state" ] || return 0
+  is_valid_osc_state "$state" || return 0
+  local target="${HERDR_OSC_TTY:-/dev/tty}"
+  local payload="state=${state}:app=${ROVO_AGENT}"
+  [ -n "$kind" ] && payload="${payload}:kind=${kind}"
+  { printf '\e]7501;%s\e\\' "$payload" > "$target"; } 2>/dev/null || true
+}
+
+# Resend an OSC 7501 report after a short delay, as a detached background
+# job that never blocks the caller's own return.
+#
+# Used only for on_session_start: confirmed live that the very first OSC
+# report can race the Herdr app's own terminal listener attaching to a
+# freshly created pane's tty, silently dropping that first write - a later
+# event (e.g. on_user_prompt) then reports fine, since the listener has
+# attached by then. A short resend closes that one-time startup window
+# without delaying session start itself (bin/rovo-herdr-hook must return
+# immediately either way).
+#
+# ROVO_OSC_RETRY_DELAY_SECONDS overrides the delay (tests only), so a test
+# can wait for the real background write to land instead of a production
+# scale delay.
+schedule_delayed_osc_retry() {
+  local osc_state="$1" osc_kind="$2" delay="${ROVO_OSC_RETRY_DELAY_SECONDS:-1}"
+  ( sleep "$delay"; emit_agent_osc7501 "$osc_state" "$osc_kind" ) </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+}
+
+# Map a Rovo hook event name to the OSC 7501 state/kind pair the Herdr app
+# understands, printed as "osc_state[ osc_kind]" (osc_kind only present when
+# non-empty; osc_state empty means no 7501 equivalent for this event).
+#
+# Deliberately independent of any pane_id: OSC 7501 is a tty-local protocol
+# (see emit_agent_osc7501 above), unlike the legacy `pane report-agent` CLI
+# call, which needs a pane_id to target. This lets bin/rovo-herdr-hook still
+# report via OSC alone for an event whose pane_id cannot be resolved at all -
+# confirmed live for a pane Herdr's own CLI registry does not know about yet
+# (e.g. a freshly created Space/split pane: `herdr pane get`/`pane current`
+# both report pane_not_found for it), as long as the hook process genuinely
+# shares a tty with that pane.
+#
+# Deliberately does NOT cover the interactive-wait "blocked/question"
+# override bin/rovo-herdr-hook applies on top of on_tool_start for the
+# ask_user_questions tool: that override depends on a per-pane persisted
+# marker (mark_interactive_wait/interactive_wait_active), which has no key to
+# read or write without a resolved pane_id. A caller with no pane_id gets
+# this function's plain on_tool_start mapping ("working") for that case
+# instead - a reporting precision loss, not a correctness bug.
+rovo_event_osc_state() {
+  case "$1" in
+    on_session_start | on_session_end) printf 'idle' ;;
+    on_user_prompt | on_tool_start | on_tool_end) printf 'working' ;;
+    on_tool_permission) printf 'blocked permission' ;;
+    on_error) printf 'error' ;;
+    on_complete) printf 'done' ;;
+    *) printf '' ;;
+  esac
+}
+
+# Report a pane's agent state to both Herdr generations:
+#
+#   - The new Herdr app, via OSC 7501 (emit_agent_osc7501 above). Only
+#     attempted when the caller passes a non-empty, valid $6/$7 - see that
+#     function's caveat about sharing the pane's tty.
+#   - The classic herdr daemon, via the `pane report-agent` CLI below.
+#
+# The OSC report happens first and independently of the legacy CLI call, so
+# it still works in an environment that only has the new Herdr app installed
+# (where the `herdr` CLI may be missing or may error out).
+#
+# Returns the exit status of the legacy `report-agent` call (non-zero when
+# Herdr rejected it), so callers can tell a real report from a failed one,
+# matching this function's pre-existing contract. The OSC report's success or
+# failure never affects this return code.
 report_agent() {
   local pane_id="$1" state="$2" custom_status="$3"
   local agent_session_id="${4:-}"
   local message="${5:-}"
+  local osc_state="${6:-}"
+  local osc_kind="${7:-}"
   local seq
   seq="$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null || true)"
+
+  emit_agent_osc7501 "$osc_state" "$osc_kind"
+
   local args=(pane report-agent "$pane_id"
     --source "$ROVO_SOURCE"
     --agent "$ROVO_AGENT"
@@ -404,32 +616,75 @@ report_agent() {
   return 0
 }
 
-# Resolve the pane associated with a Rovo hook invocation. Rovo inherits the
-# Herdr pane environment when started inside Herdr, which is the reliable path.
-# The cwd fallback is only for manual tests or unusual launchers.
+# Resolve the pane associated with a Rovo hook invocation, trying in order:
+#   1. HERDR_PANE_ID, inherited from the Herdr pane environment, confirmed via
+#      pane_exists - the reliable path when it is still accurate for this
+#      process (see caveat below). Confirmed live that a torn-down
+#      pane/workspace leaves this pointing at an id Herdr no longer knows
+#      about at all, not merely a reassigned one; pane_exists catches that
+#      specific case and lets resolution fall through instead of reporting a
+#      dead pane.
+#   2. A live match of the event's cwd against a pane's foreground cwd and
+#      foreground process (manual tests, unusual launchers, or a recovery
+#      path for #3 below).
+#   3. The session-pane cache (see above), when #1 is stale and #2 cannot
+#      currently see Rovo as the pane's foreground process/cwd.
+#   4. Herdr's focused pane, guarded against concurrently-running sessions -
+#      the only path that can ever resolve a session relayed through Herdr's
+#      managed-agent subsystem, which has neither a usable HERDR_PANE_ID nor
+#      an OS-visible foreground process to match on (see above).
 resolve_rovo_hook_pane() {
   local cwd="${1:-}"
+  local session_id="${2:-}"
 
-  if [ -n "${HERDR_PANE_ID:-}" ]; then
+  if [ -n "${HERDR_PANE_ID:-}" ] && pane_exists "$HERDR_PANE_ID"; then
+    cache_session_pane "$session_id" "$HERDR_PANE_ID"
     printf '%s' "$HERDR_PANE_ID"
     return 0
   fi
 
-  if [ -z "$cwd" ]; then
-    return 1
+  if [ -n "$cwd" ]; then
+    local pane_id pane_json pane_cwd
+    while IFS= read -r pane_id; do
+      [ -n "$pane_id" ] || continue
+      pane_json="$("$(herdr_bin)" pane get "$pane_id" 2>/dev/null)" || continue
+      pane_cwd="$(printf '%s' "$pane_json" \
+        | jq -r '.result.pane.foreground_cwd // .result.pane.cwd // empty' 2>/dev/null)" || continue
+      if [ "$pane_cwd" = "$cwd" ] && pane_is_rovo "$pane_id"; then
+        cache_session_pane "$session_id" "$pane_id"
+        printf '%s' "$pane_id"
+        return 0
+      fi
+    done < <(list_pane_ids)
   fi
 
-  local pane_id pane_json pane_cwd
-  while IFS= read -r pane_id; do
-    [ -n "$pane_id" ] || continue
-    pane_json="$("$(herdr_bin)" pane get "$pane_id" 2>/dev/null)" || continue
-    pane_cwd="$(printf '%s' "$pane_json" \
-      | jq -r '.result.pane.foreground_cwd // .result.pane.cwd // empty' 2>/dev/null)" || continue
-    if [ "$pane_cwd" = "$cwd" ] && pane_is_rovo "$pane_id"; then
-      printf '%s' "$pane_id"
-      return 0
-    fi
-  done < <(list_pane_ids)
+  # Reuse the pane this exact session resolved on an earlier, successful
+  # call - see the session-pane cache comment above for why both paths above
+  # can stop working partway through a long-running session.
+  if cached_session_pane "$session_id"; then
+    return 0
+  fi
+
+  # Final fallback: Herdr's own CLI guidance (`herdr --skill`) says that a
+  # caller with no usable HERDR_PANE_ID should target the focused pane. A
+  # session relayed through Herdr's managed-agent subsystem (herdr-core)
+  # never has HERDR_PANE_ID and is never the pane's OS-visible foreground
+  # process either, so neither path above can ever resolve it - this is the
+  # only path that can, and it is only reached once per session (the result
+  # is cached above for every later call).
+  #
+  # pane_is_rovo cannot gate this candidate, because that same managed-agent
+  # relay is exactly why the pane's OS-visible foreground process is not
+  # Rovo. Guard against misattribution across concurrently-running Rovo
+  # sessions instead: refuse a pane another live session already claimed.
+  local current_pane
+  current_pane="$("$(herdr_bin)" pane current --current 2>/dev/null \
+    | jq -r '.result.pane.pane_id // empty')" || current_pane=""
+  if [ -n "$current_pane" ] && ! pane_claimed_by_other_session "$current_pane" "$session_id"; then
+    cache_session_pane "$session_id" "$current_pane"
+    printf '%s' "$current_pane"
+    return 0
+  fi
 
   return 1
 }
