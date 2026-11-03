@@ -26,8 +26,21 @@ tool_name="$(printf '%s' "$payload" \
       // .attributes.tool_results[0].tool_name
       // empty
     ' 2>/dev/null || true)"
-pane_id="$(resolve_rovo_hook_pane "$cwd" 2>/dev/null || true)"
-[ -n "$pane_id" ] || exit 0
+pane_id="$(resolve_rovo_hook_pane "$cwd" "$session_id" 2>/dev/null || true)"
+if [ -z "$pane_id" ]; then
+  # No pane_id could be resolved at all (see resolve_rovo_hook_pane's
+  # caveats). The legacy `pane report-agent` CLI call below genuinely cannot
+  # run without one, but OSC 7501 is a tty-local protocol that needs no
+  # pane_id (see rovo_event_osc_state/emit_agent_osc7501) - report via that
+  # path alone instead of silently dropping the event.
+  osc_state="" osc_kind=""
+  read -r osc_state osc_kind <<< "$(rovo_event_osc_state "$event_name")"
+  emit_agent_osc7501 "$osc_state" "$osc_kind"
+  if [ "$event_name" = "on_session_start" ]; then
+    schedule_delayed_osc_retry "$osc_state" "$osc_kind"
+  fi
+  exit 0
+fi
 
 # Nested sessions share the parent's pane. Their late tool events can arrive after
 # the parent completes, so only the top-level session may control pane state.
@@ -140,8 +153,13 @@ esac
 report_agent "$pane_id" "$state" "$custom_status" "$session_id" "$message" \
   "$osc_state" "$osc_kind" || true
 
+if [ "$event_name" = "on_session_start" ]; then
+  schedule_delayed_osc_retry "$osc_state" "$osc_kind"
+fi
+
 if [ "$event_name" = "on_session_end" ]; then
   clear_pane_hooked "$pane_id"
+  clear_session_pane "$session_id"
 fi
 
 exit 0

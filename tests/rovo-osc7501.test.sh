@@ -231,6 +231,102 @@ run_hook_e2e "on_tool_start" "$osc" "ask_user_questions"
 assert_contains "$osc" "state=blocked:app=rovo-dev:kind=question" \
   "on_tool_start(ask_user_questions) reaches the Herdr app as blocked/question, not working"
 
+# =============================================================================
+echo "test: bin/rovo-herdr-hook - on_session_start resends OSC after a short delay"
+# Confirmed live: the very first OSC write for a freshly created pane can
+# race the Herdr app's own terminal listener attaching to that pane's tty and
+# get silently dropped, while a later event (e.g. on_user_prompt) reports
+# fine once the listener has attached. schedule_delayed_osc_retry closes that
+# one-time window with a background resend. Deletes the immediate write, then
+# waits past ROVO_OSC_RETRY_DELAY_SECONDS=0 and asserts the resend lands -
+# this exercises the real background write, not merely the call that starts it.
+# The preceding ask_user_questions test left pane eT:p9 marked as waiting for
+# input; clear it first so this test observes on_session_start's own mapping.
+run_hook_e2e "on_user_prompt" "$HOOK_WORK/osc-clear-wait.raw" >/dev/null 2>&1
+
+osc="$HOOK_WORK/osc-retry-full.raw"
+ROVO_OSC_RETRY_DELAY_SECONDS=0.2 run_hook_e2e "on_session_start" "$osc"
+assert_contains "$osc" "state=idle:app=rovo-dev" \
+  "on_session_start's immediate OSC report lands (pane_id resolved)"
+rm -f "$osc"
+sleep 0.6
+assert_contains "$osc" "state=idle:app=rovo-dev" \
+  "on_session_start's delayed resend re-lands after the immediate report is lost"
+
+# =============================================================================
+echo "test: bin/rovo-herdr-hook - OSC still reports when no pane_id can be resolved at all"
+# Simulates a pane Herdr's own CLI registry does not know about yet (confirmed
+# live for a freshly created Space/split pane): no HERDR_PANE_ID, and every
+# `pane get`/`pane current` call reports pane_not_found, so
+# resolve_rovo_hook_pane exhausts every path and returns nothing. OSC 7501
+# needs no pane_id (see rovo_event_osc_state), so it must still fire; the
+# legacy `pane report-agent` CLI call must NOT be attempted (there is no
+# pane_id to target it at).
+NOPANE_WORK="$(mktemp -d)"
+mkdir -p "$NOPANE_WORK/bin" "$NOPANE_WORK/state" "$NOPANE_WORK/sessions/sess-nopane"
+NOPANE_LOG="$NOPANE_WORK/calls.log"
+cat > "$NOPANE_WORK/bin/herdr" <<'NOPANE_STUB'
+#!/usr/bin/env bash
+printf '%s
+' "$*" >> "$NOPANE_LOG"
+case "$1 $2" in
+  "pane get"|"pane current")
+    echo '{"error":{"code":"pane_not_found","message":"pane not found"}}'
+    exit 1
+    ;;
+  "pane list")
+    echo '{"result":{"panes":[]}}'
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+NOPANE_STUB
+chmod +x "$NOPANE_WORK/bin/herdr"
+
+run_hook_nopane() { # <event_name> <osc_target_file>
+  local event="$1" osc_target="$2"
+  printf '{"hook_event_name":"%s","session_id":"sess-nopane","cwd":"/tmp","attributes":{}}' \
+    "$event" | env \
+    PATH="$NOPANE_WORK/bin:$PATH" \
+    HERDR_BIN_PATH="$NOPANE_WORK/bin/herdr" \
+    HERDR_ROVO_STATE_DIR="$NOPANE_WORK/state" \
+    ROVO_SESSIONS_DIR="$NOPANE_WORK/sessions" \
+    NOPANE_LOG="$NOPANE_LOG" \
+    HERDR_OSC_TTY="$osc_target" \
+    bash "$REPO_ROOT/bin/rovo-herdr-hook" >/dev/null 2>&1
+}
+
+: > "$NOPANE_LOG"
+osc="$NOPANE_WORK/osc-session-start.raw"
+run_hook_nopane "on_session_start" "$osc"
+assert_contains "$osc" "state=idle:app=rovo-dev" \
+  "on_session_start still reaches the Herdr app via OSC with no resolvable pane_id"
+
+osc="$NOPANE_WORK/osc-complete.raw"
+run_hook_nopane "on_complete" "$osc"
+assert_contains "$osc" "state=done:app=rovo-dev" \
+  "on_complete still reaches the Herdr app via OSC with no resolvable pane_id"
+
+if grep -q "report-agent" "$NOPANE_LOG"; then
+  check 1 "the legacy 'pane report-agent' CLI call is never attempted without a pane_id" \
+    "$(cat "$NOPANE_LOG")"
+else
+  check 0 "the legacy 'pane report-agent' CLI call is never attempted without a pane_id"
+fi
+
+echo "test: bin/rovo-herdr-hook - on_session_start resends OSC via the no-pane_id bypass too"
+osc="$NOPANE_WORK/osc-retry-nopane.raw"
+ROVO_OSC_RETRY_DELAY_SECONDS=0.2 run_hook_nopane "on_session_start" "$osc"
+assert_contains "$osc" "state=idle:app=rovo-dev" \
+  "on_session_start's immediate bypass OSC report lands (no pane_id)"
+rm -f "$osc"
+sleep 0.6
+assert_contains "$osc" "state=idle:app=rovo-dev" \
+  "on_session_start's delayed resend re-lands via the bypass path too"
+
+rm -rf "$NOPANE_WORK"
+
 rm -rf "$HOOK_WORK"
 
 # ---------------------------------------------------------------------------
